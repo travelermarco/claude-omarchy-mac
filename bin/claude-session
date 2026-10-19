@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# claude-session — Apre Ghostty e riprende l'ultima sessione di Claude Code.
+#
+# Stile Omarchy: lanciato sia dalla scorciatoia skhd (ctrl+alt - a) sia dal
+# widget SwiftBar in alto a destra. Riprende la conversazione piu' recente
+# nella cartella CLAUDE_DIR; se non ce n'e' una, ne apre una nuova.
+#
+# Per far ripartire sempre dalla tua cartella di lavoro, cambia CLAUDE_DIR:
+#   CLAUDE_DIR="$HOME/Area di Lavoro Claude Code"
+CLAUDE_DIR="${CLAUDE_DIR:-$HOME}"
+
+# -n: nuova finestra; --working-directory: cartella di partenza di Claude Code;
+# -e: comando da eseguire. Se "--continue" non trova una sessione, parte pulito.
+open -na Ghostty --args \
+  --working-directory="$CLAUDE_DIR" \
+  -e zsh -lc 'claude --continue || claude'

@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+import sys, json, time, subprocess, urllib.request, urllib.error
+SERVICE="Claude Code-credentials"
+USAGE_URL="https://api.anthropic.com/api/oauth/usage"
+TOKEN_URL="https://platform.claude.com/v1/oauth/token"
+CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+BETA="oauth-2025-04-20"; REFRESH_BUFFER=300
+def read_creds():
+    try:
+        r=subprocess.run(["security","find-generic-password","-s",SERVICE,"-w"],capture_output=True,text=True,timeout=20)
+        if r.returncode!=0 or not r.stdout.strip(): return None,None
+        creds=json.loads(r.stdout)
+    except Exception: return None,None
+    acct=None
+    try:
+        m=subprocess.run(["security","find-generic-password","-s",SERVICE],capture_output=True,text=True,timeout=20)
+        for line in m.stdout.splitlines():
+            if '"acct"' in line and '="' in line:
+                acct=line.split('="',1)[1].rstrip('"'); break
+    except Exception: pass
+    return creds,acct
+def write_creds(creds,acct):
+    try:
+        blob=json.dumps(creds,separators=(",",":"))
+        args=["security","add-generic-password","-U","-s",SERVICE]
+        if acct: args+=["-a",acct]
+        args+=["-w",blob]
+        subprocess.run(args,capture_output=True,text=True,timeout=20); return True
+    except Exception: return False
+def refresh(creds,acct):
+    o=creds.get("claudeAiOauth",{}); rt=o.get("refreshToken")
+    if not rt: return None
+    body=json.dumps({"grant_type":"refresh_token","client_id":CLIENT_ID,"refresh_token":rt}).encode()
+    req=urllib.request.Request(TOKEN_URL,data=body,method="POST",headers={"Content-Type":"application/json","anthropic-beta":BETA,"User-Agent":"claude-cli/1.0"})
+    try:
+        with urllib.request.urlopen(req,timeout=25) as resp: data=json.loads(resp.read().decode())
+    except Exception: return None
+    at=data.get("access_token")
+    if not at: return None
+    o["accessToken"]=at
+    if data.get("refresh_token"): o["refreshToken"]=data["refresh_token"]
+    try: ei=int(float(data.get("expires_in") or 3600))
+    except Exception: ei=3600
+    o["expiresAt"]=int(time.time()*1000)+ei*1000; creds["claudeAiOauth"]=o
+    write_creds(creds,acct); return at
+def fetch_usage(at):
+    req=urllib.request.Request(USAGE_URL,headers={"Authorization":"Bearer "+at,"anthropic-beta":BETA})
+    try:
+        with urllib.request.urlopen(req,timeout=15) as resp: return resp.getcode(),resp.read().decode()
+    except urllib.error.HTTPError as e:
+        try: return e.code,e.read().decode()
+        except Exception: return e.code,""
+    except Exception: return 0,""
+def get_usage():
+    creds,acct=read_creds()
+    if not creds: return "noauth",None
+    o=creds.get("claudeAiOauth",{}); at=o.get("accessToken"); exp=o.get("expiresAt") or 0
+    try: exp_s=float(exp)/1000.0
+    except Exception: exp_s=0
+    refreshed=False
+    if at and exp_s and exp_s < time.time()+REFRESH_BUFFER:
+        n=refresh(creds,acct)
+        if n: at=n; refreshed=True
+    if not at: return "noauth",None
+    code,body=fetch_usage(at)
+    if code==401 and not refreshed:
+        n=refresh(creds,acct)
+        if n: code,body=fetch_usage(n)
+    if code==200 and '"five_hour"' in body:
+        try: return "ok",json.loads(body)
+        except Exception: return "ok",None
+    return ("err:%s"%code),None
+def main():
+    status,body=get_usage()
+    if "--json" in sys.argv:
+        print(json.dumps({"status":status,"body":body})); return 0
+    if status=="ok" and body:
+        def p(w):
+            try: return int(round(float((body.get(w) or {}).get("utilization") or 0)))
+            except Exception: return 0
+        print("Claude utilizzo  ->  Sessione(5h): %d%%   Settimana(7d): %d%%"%(p("five_hour"),p("seven_day")))
+        print("OK: token e endpoint funzionanti."); return 0
+    if status=="noauth":
+        print("Token non leggibile dal Keychain: dai 'Consenti sempre' al prompt, o apri Claude Code una volta."); return 1
+    print("Errore endpoint uso: %s (se 401, apri Claude Code per rinnovare il token)"%status); return 2
+if __name__=="__main__": sys.exit(main())
